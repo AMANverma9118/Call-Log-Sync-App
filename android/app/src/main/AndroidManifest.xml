@@ -48,15 +48,8 @@
       <!-- Service for our Headless JS task -->
       <service android:name=".CallSyncService" />
       
-      <!-- Phone state receiver for call log detection -->
-      <receiver 
-        android:name=".PhoneStateReceiver"
-        android:enabled="true"
-        android:exported="true">
-        <intent-filter android:priority="1000">
-          <action android:name="android.intent.action.PHONE_STATE" />
-        </intent-filter>
-      </receiver>
+      <!-- Foreground service to keep the PhoneStateReceiver alive -->
+      <service android:name=".CallDetectionService" android:foregroundServiceType="dataSync"/>
       
     </application>
 </manifest>

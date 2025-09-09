@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   SafeAreaView,
   StyleSheet,
@@ -8,28 +8,44 @@ import {
   Platform,
   ActivityIndicator,
   Alert,
-  TouchableOpacity,
+  Linking,
 } from 'react-native';
-import CallLogs from 'react-native-call-log';
+import CallLogs, { CallLog } from 'react-native-call-log';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // --- API URL ---
+// Make sure this is the correct IP address for your development server.
+// For a physical device, this must be your computer's network IP.
 const API_URL = 'http://10.106.29.101:3000/api/logs';
 
 // --- HEADLESS TASK (runs in the background) ---
 export const CallSyncTask = async () => {
-  console.log('[Headless Task] Call ended, starting sync...');
+  console.log('[Headless Task] Task started.');
   try {
-    // Fetch the timestamp of the last synced log
+    const hasPermissions = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.READ_CALL_LOG);
+    if (!hasPermissions) {
+      console.log('[Headless Task] Missing READ_CALL_LOG permission. Aborting.');
+      return;
+    }
+
     const lastSyncTimestamp = await AsyncStorage.getItem('lastSyncTimestamp');
-    
-    // Fetch logs newer than the last sync
-    const newLogs = await CallLogs.load(1, { minTimestamp: lastSyncTimestamp || '0' });
+    const lastTimestamp = lastSyncTimestamp ? parseInt(lastSyncTimestamp, 10) : 0;
+
+    // Fetch all logs since the last sync. We filter by duration and valid timestamp in our code.
+    const logs: CallLog[] = await CallLogs.load(-1, {
+      minTimestamp: lastTimestamp.toString(),
+    });
+
+    // Filter out invalid, very short ( <1s), or already processed logs
+    const newLogs = logs.filter((log: CallLog) => {
+      const timestamp = parseInt(log.timestamp, 10);
+      return !isNaN(timestamp) && timestamp > lastTimestamp && log.duration > 0;
+    });
 
     if (newLogs.length > 0) {
-      console.log(`[Headless Task] Found ${newLogs.length} new log(s).`);
-      
-      // Send to server
+      console.log(`[Headless Task] Found ${newLogs.length} new, valid log(s).`);
+
+      // The API expects an array of logs
       const response = await fetch(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -37,108 +53,182 @@ export const CallSyncTask = async () => {
       });
 
       if (!response.ok) {
-        throw new Error('Server responded with an error.');
+        const errorText = await response.text();
+        throw new Error(`Server responded with status ${response.status}: ${errorText}`);
       }
 
-      // Update the timestamp to the newest log we just synced
-      const latestTimestamp = newLogs[0].timestamp;
-      await AsyncStorage.setItem('lastSyncTimestamp', latestTimestamp);
-      console.log(`[Headless Task] Sync complete. Newest timestamp: ${latestTimestamp}`);
+      // Find the timestamp of the most recent log we just synced
+      const latestTimestamp = Math.max(...newLogs.map((log: CallLog) => parseInt(log.timestamp, 10)));
+      await AsyncStorage.setItem('lastSyncTimestamp', latestTimestamp.toString());
+      console.log(`[Headless Task] Sync complete. Newest timestamp set to: ${latestTimestamp}`);
     } else {
       console.log('[Headless Task] No new logs to sync.');
     }
   } catch (error) {
-    console.error('[Headless Task] Error:', error);
+    console.error('[Headless Task] Error during sync:', error);
   }
 };
 
+
 // --- MAIN APP COMPONENT ---
-class App extends React.Component {
-  state = {
-    status: 'Ready.',
-    isLoading: false,
-  };
+const App = () => {
+  const [status, setStatus] = useState('Initializing...');
+  const [isLoading, setIsLoading] = useState(true);
 
-  componentDidMount() {
-    this.requestPermissions();
-  }
-
-  requestPermissions = async () => {
-    this.setState({ status: 'Requesting permissions...', isLoading: true });
-    if (Platform.OS !== 'android') {
-      this.setState({ status: 'This app is for Android only.', isLoading: false });
-      return;
-    }
-    try {
-      const permissionsToRequest = [
-        PermissionsAndroid.PERMISSIONS.READ_CALL_LOG,
-        PermissionsAndroid.PERMISSIONS.READ_PHONE_STATE,
-      ];
-      if (Platform.Version >= 33) {
-        permissionsToRequest.push(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
-      }
-      const granted = await PermissionsAndroid.requestMultiple(permissionsToRequest);
-      const allGranted = Object.values(granted).every(
-        (result) => result === PermissionsAndroid.RESULTS.GRANTED
-      );
-
-      if (!allGranted) {
-        throw new Error('All permissions are required for the app to function.');
+  useEffect(() => {
+    const requestPermissions = async () => {
+      if (Platform.OS !== 'android') {
+        setStatus('This app is designed for Android only.');
+        setIsLoading(false);
+        return;
       }
 
-      this.setState({ status: 'Permissions granted. App is active and will sync on call end.', isLoading: false });
-
-    } catch (err) {
-      const errorMsg = err.message || 'An error occurred during permission request.';
-      this.setState({ status: errorMsg, isLoading: false });
-      Alert.alert('Error', errorMsg);
-    }
-  };
-
-  // Manual sync button for testing or first-time use
-  manualSync = async () => {
-    this.setState({ status: 'Performing manual sync...', isLoading: true });
-    await CallSyncTask(); // Run the same task manually
-    this.setState({ status: 'Manual sync finished.', isLoading: false });
-  };
-
-  render() {
-    const { status, isLoading } = this.state;
-    return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.header}>
-          <Text style={styles.title}>Call Log Sync</Text>
-          <Text style={styles.subtitle}>Real-time Service</Text>
-        </View>
-        <View style={styles.statusContainer}>
-          <Text style={styles.statusLabel}>Status:</Text>
-          <Text style={styles.statusText}>{status}</Text>
-          {isLoading && <ActivityIndicator size="large" color="#2563eb" style={{ marginTop: 15 }} />}
-        </View>
+      setStatus('Requesting permissions...');
+      try {
+        const permissionsToRequest = [
+          PermissionsAndroid.PERMISSIONS.READ_CALL_LOG,
+          PermissionsAndroid.PERMISSIONS.READ_PHONE_STATE,
+        ];
         
-        <TouchableOpacity style={styles.button} onPress={this.manualSync} disabled={isLoading}>
-          <Text style={styles.buttonText}>Run Manual Sync</Text>
-        </TouchableOpacity>
+        // For Android 13+ (API 33), POST_NOTIFICATIONS is needed for foreground services
+        if (Platform.Version >= 33) {
+          permissionsToRequest.push(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
+        }
 
+        const granted = await PermissionsAndroid.requestMultiple(permissionsToRequest);
+        
+        const allGranted = Object.values(granted).every(
+          result => result === PermissionsAndroid.RESULTS.GRANTED
+        );
+
+        if (allGranted) {
+          setStatus('Permissions granted. The app is active and will sync automatically after a call ends.');
+          // Start the foreground service
+          if (Platform.OS === 'android') {
+            const { AppState, NativeModules } = require('react-native');
+            const startService = () => {
+              const { CallDetectionManager } = NativeModules;
+              if (CallDetectionManager && CallDetectionManager.startService) {
+                  CallDetectionManager.startService();
+              }
+            };
+            startService();
+            AppState.addEventListener('change', (nextAppState: string) => {
+                if (nextAppState === 'active') {
+                    startService();
+                }
+            });
+          }
+        } else {
+          setStatus('Permissions denied. The app cannot function without them. Please grant permissions in settings.');
+          Alert.alert(
+            'Permissions Required',
+            'This app needs call log and phone state permissions to work. Please enable them in your app settings.',
+            [
+              { text: 'Open Settings', onPress: () => Linking.openSettings() },
+              { text: 'Cancel', style: 'cancel' },
+            ]
+          );
+        }
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : 'An unknown error occurred.';
+        setStatus(`Error: ${errorMsg}`);
+        Alert.alert('Error', errorMsg);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    requestPermissions();
+  }, []);
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <View style={styles.header}>
+        <Text style={styles.title}>Call Log Sync</Text>
+        <Text style={styles.subtitle}>Automatic Service</Text>
+      </View>
+      <View style={styles.statusContainer}>
+        <Text style={styles.statusLabel}>STATUS</Text>
+        {isLoading && <ActivityIndicator size="large" color="#2563eb" style={styles.loader} />}
+        <Text style={styles.statusText}>{status}</Text>
+      </View>
+      <View style={styles.footer}>
         <Text style={styles.infoText}>
-          This app runs in the background. After a call ends, it will automatically sync the log.
+          This app runs automatically in the background. No manual action is needed.
         </Text>
-      </SafeAreaView>
-    );
-  }
-}
+        <Text style={styles.infoText}>
+          After a phone call is completed, the log will be synced to the server.
+        </Text>
+      </View>
+    </SafeAreaView>
+  );
+};
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f0f4f8', alignItems: 'center', justifyContent: 'center', padding: 20, },
-  header: { alignItems: 'center', marginBottom: 40, },
-  title: { fontSize: 32, fontWeight: 'bold', color: '#1e293b', },
-  subtitle: { fontSize: 18, color: '#475569', marginTop: 5, },
-  statusContainer: { marginVertical: 20, padding: 15, backgroundColor: '#ffffff', borderRadius: 8, width: '100%', alignItems: 'center', borderWidth: 1, borderColor: '#e2e8f0', minHeight: 100, },
-  statusLabel: { fontSize: 16, fontWeight: '600', color: '#475569', },
-  statusText: { fontSize: 14, color: '#1e293b', marginTop: 5, textAlign: 'center', },
-  infoText: { marginTop: 40, fontSize: 14, color: '#64748b', textAlign: 'center', paddingHorizontal: 20, },
-  button: { marginTop: 30, backgroundColor: '#2563eb', paddingVertical: 15, paddingHorizontal: 30, borderRadius: 8, elevation: 2, },
-  buttonText: { color: '#ffffff', fontSize: 18, fontWeight: 'bold' },
+  container: {
+    flex: 1,
+    backgroundColor: '#f0f4f8',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  header: {
+    alignItems: 'center',
+    position: 'absolute',
+    top: 80,
+  },
+  title: {
+    fontSize: 36,
+    fontWeight: 'bold',
+    color: '#1e293b',
+  },
+  subtitle: {
+    fontSize: 20,
+    color: '#475569',
+    marginTop: 8,
+  },
+  statusContainer: {
+    marginVertical: 20,
+    padding: 25,
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    width: '100%',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    minHeight: 150,
+    justifyContent: 'center',
+    elevation: 2,
+  },
+  statusLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#94a3b8',
+    letterSpacing: 1,
+    marginBottom: 15,
+  },
+  statusText: {
+    fontSize: 16,
+    color: '#1e293b',
+    textAlign: 'center',
+    lineHeight: 24,
+  },
+  loader: {
+    marginBottom: 15,
+  },
+  footer: {
+    position: 'absolute',
+    bottom: 40,
+    alignItems: 'center',
+  },
+  infoText: {
+    fontSize: 14,
+    color: '#64748b',
+    textAlign: 'center',
+    paddingHorizontal: 20,
+    marginTop: 10,
+  },
 });
 
 export default App;

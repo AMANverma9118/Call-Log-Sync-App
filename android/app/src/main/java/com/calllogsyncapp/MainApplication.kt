@@ -10,8 +10,7 @@ import com.facebook.react.ReactPackage
 import com.facebook.react.defaults.DefaultReactHost.getDefaultReactHost
 import com.facebook.react.defaults.DefaultReactNativeHost
 
-// --- This import is no longer needed for manual registration ---
-// import com.pritesh.calldetection.CallDetectionManager
+import com.calllogsyncapp.CallDetectionPackage;
 
 class MainApplication : Application(), ReactApplication {
 
@@ -21,8 +20,7 @@ class MainApplication : Application(), ReactApplication {
             PackageList(this).packages.apply {
               // Packages that cannot be autolinked yet can be added manually here, for example:
               // add(MyReactNativePackage())
-              
-              // --- The manual registration line has been removed ---
+              add(CallDetectionPackage())
             }
 
         override fun getJSMainModuleName(): String = "index"
