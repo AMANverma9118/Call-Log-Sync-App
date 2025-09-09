@@ -16,7 +16,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 // --- API URL ---
 // Make sure this is the correct IP address for your development server.
 // For a physical device, this must be your computer's network IP.
-const API_URL = 'http://10.106.29.101:3000/api/logs';
+const API_URL = 'https://call-log-sync-app-backend.onrender.com/api/logs';
 
 // --- HEADLESS TASK (runs in the background) ---
 export const CallSyncTask = async () => {
